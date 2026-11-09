@@ -95,7 +95,8 @@ fun AppNavigation(dataStore: DataStoreManager) {
 
             entry<Screen.Content> { route ->
                 ContentScreen(
-                    onSettings = { backStack.add(Screen.Settings(name = route.name)) }
+                    onSettings = { backStack.add(Screen.Settings(name = route.name)) },
+                    onBack = { if (backStack.size > 1) backStack.removeLastOrNull() }
                 )
             }
 
