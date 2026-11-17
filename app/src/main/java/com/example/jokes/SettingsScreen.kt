@@ -14,11 +14,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.jokes.data.BackupFileInfo
 import com.example.jokes.data.DataStoreManager
+import com.example.jokes.data.JokeApiRepository
+import com.example.jokes.data.JokeBackupManager
 import com.example.jokes.data.JokeRepository
+import com.example.jokes.data.SharedPreferencesManager
 import com.example.jokes.navigation.ScreenLifecycleLogger
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun SettingsScreen(dataStore: DataStoreManager, onBack: () -> Unit) {
@@ -26,19 +33,29 @@ fun SettingsScreen(dataStore: DataStoreManager, onBack: () -> Unit) {
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val sharedPreferences = remember { SharedPreferencesManager(context) }
 
     var name by remember { mutableStateOf("") }
     var gender by remember { mutableStateOf("") }
     var age by remember { mutableStateOf("") }
     var darkTheme by remember { mutableStateOf(false) }
     var fontScale by remember { mutableStateOf(1.0f) }
-    var backupExists by remember { mutableStateOf(false) }
+    var publicBackup by remember { mutableStateOf<BackupFileInfo?>(null) }
+    var internalBackup by remember { mutableStateOf<BackupFileInfo?>(null) }
+    var isBackupBusy by remember { mutableStateOf(false) }
+
+    suspend fun refreshBackups() {
+        publicBackup = JokeBackupManager.getPublicBackup(context)
+        internalBackup = JokeBackupManager.getInternalBackup(context)
+    }
 
     LaunchedEffect(Unit) {
-        name = dataStore.userName.first()
+        name = sharedPreferences.name
+        gender = sharedPreferences.gender
+        age = sharedPreferences.age
         darkTheme = dataStore.isDarkTheme.first()
         fontScale = dataStore.fontScale.first()
-        backupExists = dataStore.backupExists.first()
+        refreshBackups()
     }
 
     Box(
@@ -46,7 +63,6 @@ fun SettingsScreen(dataStore: DataStoreManager, onBack: () -> Unit) {
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // === Слой 1: скроллируемый контент ===
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -85,13 +101,12 @@ fun SettingsScreen(dataStore: DataStoreManager, onBack: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             Button(
                 onClick = {
-                    if (age.isNotEmpty() && age.toInt() <= 0) {
+                    val parsedAge = age.toIntOrNull()
+                    if (age.isNotEmpty() && (parsedAge == null || parsedAge <= 0)) {
                         Toast.makeText(context, "Возраст должен быть положительным", Toast.LENGTH_SHORT).show()
                     } else {
-                        scope.launch {
-                            dataStore.saveProfile(name, gender, age)
-                            Toast.makeText(context, "Профиль сохранён", Toast.LENGTH_SHORT).show()
-                        }
+                        sharedPreferences.saveProfile(name, gender, age)
+                        Toast.makeText(context, "Профиль сохранён", Toast.LENGTH_SHORT).show()
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -131,63 +146,96 @@ fun SettingsScreen(dataStore: DataStoreManager, onBack: () -> Unit) {
             Text("Резервная копия", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
             Text(
-                if (backupExists) "Копия найдена на устройстве"
-                else "Копия отсутствует — создайте её для работы офлайн",
+                publicBackup?.let { file ->
+                    "Файл: ${file.name}\n" +
+                        "Расположение: ${file.location}\n" +
+                        "Размер: ${file.sizeLabel()}\n" +
+                        "Изменён: ${file.dateLabel()}"
+                } ?: "Файл в Downloads отсутствует",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            Spacer(Modifier.height(4.dp))
+            Text(
+                internalBackup?.let { file ->
+                    "Внутренняя копия: ${file.name}, ${file.sizeLabel()}"
+                } ?: "Внутренняя копия отсутствует",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
             Spacer(Modifier.height(8.dp))
 
             Button(
                 onClick = {
                     scope.launch {
-                        val data = JokeRepository.jokes.joinToString("|") { it.text }
-                        dataStore.createBackup(data)
-                        backupExists = true
-                        Toast.makeText(context, "Копия создана", Toast.LENGTH_SHORT).show()
+                        isBackupBusy = true
+                        val jokes = JokeApiRepository.loadJokes(context, 10)
+                            .getOrElse { JokeRepository.jokes }
+                        JokeBackupManager.createBackup(context, jokes)
+                            .onSuccess {
+                                Toast.makeText(context, "Файл сохранён в Downloads", Toast.LENGTH_SHORT).show()
+                                refreshBackups()
+                            }
+                            .onFailure {
+                                Toast.makeText(context, "Ошибка: ${it.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        isBackupBusy = false
                     }
                 },
+                enabled = !isBackupBusy,
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Создать копию") }
-
-            Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = {
-                    scope.launch {
-                        val data = dataStore.restoreBackup()
-                        if (data.isBlank()) {
-                            Toast.makeText(context, "Копия пуста", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(context, "Данные восстановлены (${data.length} симв.)", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                },
-                enabled = backupExists,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Восстановить из копии") }
+            ) { Text(if (publicBackup == null) "Создать файл" else "Пересоздать файл") }
 
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
                 onClick = {
                     scope.launch {
-                        dataStore.deleteBackup()
-                        backupExists = false
-                        Toast.makeText(context, "Копия удалена", Toast.LENGTH_SHORT).show()
+                        isBackupBusy = true
+                        JokeBackupManager.deletePublicAndKeepInternal(context)
+                            .onSuccess {
+                                Toast.makeText(context, "Файл удалён, копия сохранена внутри приложения", Toast.LENGTH_SHORT).show()
+                                refreshBackups()
+                            }
+                            .onFailure {
+                                Toast.makeText(context, "Ошибка: ${it.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        isBackupBusy = false
                     }
                 },
-                enabled = backupExists,
+                enabled = publicBackup != null && !isBackupBusy,
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Удалить копию") }
+            ) { Text("Удалить файл") }
+
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    scope.launch {
+                        isBackupBusy = true
+                        JokeBackupManager.restoreBackup(context)
+                            .onSuccess {
+                                Toast.makeText(context, "Файл восстановлен в Downloads", Toast.LENGTH_SHORT).show()
+                                refreshBackups()
+                            }
+                            .onFailure {
+                                Toast.makeText(context, "Ошибка: ${it.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        isBackupBusy = false
+                    }
+                },
+                enabled = internalBackup != null && !isBackupBusy,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Восстановить файл") }
 
             Spacer(Modifier.height(16.dp))
         }
 
-        // === Слой 2: шапка с кнопкой "Назад" поверх всего ===
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.background)
-                .windowInsetsPadding(WindowInsets.statusBars) // отступ от status bar
+                .windowInsetsPadding(WindowInsets.statusBars)
                 .padding(horizontal = 8.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -212,3 +260,10 @@ fun SettingsScreen(dataStore: DataStoreManager, onBack: () -> Unit) {
         }
     }
 }
+
+private fun BackupFileInfo.sizeLabel(): String =
+    if (sizeBytes < 1024) "$sizeBytes Б"
+    else String.format(Locale.getDefault(), "%.1f КБ", sizeBytes / 1024.0)
+
+private fun BackupFileInfo.dateLabel(): String =
+    SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(modifiedAtSeconds * 1000))

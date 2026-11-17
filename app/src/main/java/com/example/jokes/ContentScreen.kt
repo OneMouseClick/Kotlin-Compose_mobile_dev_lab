@@ -261,8 +261,8 @@ fun JokeCard(joke: Joke) {
                 Text(joke.category, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (joke.rating > 0) {
                     Text("★ ${joke.rating}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
-}
 }
